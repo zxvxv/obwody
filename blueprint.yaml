@@ -1,11 +1,14 @@
 blueprint:
-  name: "Obwody Krytyczne (Deye Default)"
+  name: "Obwody Krytyczne (Smart Recovery)"
   description: >
-    System ochrony zasilania.
+    System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     1. AWARIA SIECI (< Limit V) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
     2. SŁABA BATERIA (< Limit 1) -> Wyłącza GRUPĘ 2 (Ostrzegawcze).
     3. PUSTA BATERIA (< Limit 2) -> Wyłącza GRUPĘ 3 (Reszta domu).
+    
+    POWRÓT ZASILANIA (Sekwencja Startu):
+    Najpierw GRUPA 3 (Najważniejsze) -> potem GRUPA 2 -> na końcu GRUPA 1 (Duże obciążenia).
   domain: automation
   source_url: https://github.com/zxvxv/obwody/blob/main/blueprint.yaml
   input:
@@ -37,7 +40,6 @@ blueprint:
       selector:
         entity:
           domain: sensor
-          # Bez filtra device_class, żeby widział wszystkie sensory
 
     # --- PROGI ---
     voltage_limit:
@@ -73,7 +75,7 @@ blueprint:
     # --- OBWODY ---
     targets_group_1:
       name: "GRUPA 1: Awaria Sieci / Hard Stop"
-      description: "Te urządzenia gasną OD RAZU (5 dużych odbiorników)."
+      description: "Te urządzenia gasną PIERWSZE przy awarii, a wstają OSTATNIE (Duże AGD)."
       selector:
         target:
           entity:
@@ -89,7 +91,7 @@ blueprint:
 
     targets_group_3:
       name: "GRUPA 3: Pusta Bateria / Full Shutdown"
-      description: "Te urządzenia gasną na końcu (reszta z 12)."
+      description: "Te urządzenia gasną OSTATNIE, a wstają PIERWSZE (Kluczowe systemy)."
       selector:
         target:
           entity:
@@ -152,7 +154,7 @@ action:
           - service: persistent_notification.create
             data:
               title: "⚡ AWARIA"
-              message: "Wyłączam Grupę 1."
+              message: "Napięcie spadło! Wyłączam Grupę 1 (Duże AGD)."
           - service: switch.turn_off
             target: !input targets_group_1
       - conditions:
@@ -194,7 +196,7 @@ action:
           - service: persistent_notification.create
             data:
               title: "🪫 BATERIA KRYTYCZNA"
-              message: "Wyłączam Grupę 3."
+              message: "Wyłączam Grupę 3 (Total Shutdown)."
           - service: switch.turn_off
             target: !input targets_group_3
       - conditions:
@@ -213,14 +215,17 @@ action:
           - service: persistent_notification.create
             data:
               title: "✅ POWRÓT ZASILANIA"
-              message: "Włączam obwody."
-          - delay: "00:00:05"
-          - service: switch.turn_on
-            target: !input targets_group_1
-          - delay: "00:00:05"
-          - service: switch.turn_on
-            target: !input targets_group_2
+              message: "Sieć stabilna >30s. Przywracam zasilanie kaskadowo (od najważniejszych)."
+          # 1. Najpierw najważniejsze (Grupa 3)
           - delay: "00:00:05"
           - service: switch.turn_on
             target: !input targets_group_3
+          # 2. Potem średnie (Grupa 2)
+          - delay: "00:00:05"
+          - service: switch.turn_on
+            target: !input targets_group_2
+          # 3. Na końcu obciążenia (Grupa 1)
+          - delay: "00:00:05"
+          - service: switch.turn_on
+            target: !input targets_group_1
 mode: restart
