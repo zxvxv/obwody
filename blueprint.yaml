@@ -10,9 +10,10 @@ blueprint:
     
     POWRÓT: Gdy napięcie na wszystkich fazach wróci powyżej Limitu Powrotu.
   domain: automation
+  # Link do Twojego repozytorium
   source_url: https://github.com/zxvxv/obwody/blob/main/blueprint.yaml
   input:
-    # --- CZUJNIKI (To co mierzy) ---
+    # --- CZUJNIKI ---
     grid_voltage_l1:
       name: "Sensor Napięcia L1"
       selector:
@@ -38,7 +39,7 @@ blueprint:
           domain: sensor
           device_class: battery
 
-    # --- KONFIGURACJA PROGÓW (Liczby) ---
+    # --- KONFIGURACJA PROGÓW ---
     voltage_limit:
       name: "Próg Napięcia - AWARIA (V)"
       description: "Poniżej tego napięcia system uzna awarię i wyłączy pierwszą grupę."
@@ -72,7 +73,7 @@ blueprint:
           unit_of_measurement: "%"
           mode: slider
 
-    # --- WYBÓR OBWODÓW (To co wyłączamy) ---
+    # --- WYBÓR OBWODÓW ---
     targets_group_1:
       name: "GRUPA 1: Obwody do wyłączenia przy AWARII SIECI"
       description: "Wybierz urządzenia, które gasną natychmiast przy zaniku fazy."
@@ -109,9 +110,9 @@ blueprint:
           unit_of_measurement: V
           mode: box
 
-# --- LOGIKA DZIAŁANIA (Silnik) ---
+# --- LOGIKA DZIAŁANIA ---
 trigger:
-  # Awaria napięcia (L1, L2 lub L3)
+  # Awaria napięcia
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     below: !input voltage_limit
@@ -137,7 +138,7 @@ trigger:
     below: !input soc_limit_2
     id: soc_2
 
-  # Powrót napięcia (Wszystkie fazy OK)
+  # Powrót napięcia
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     above: !input voltage_recovery
@@ -156,7 +157,7 @@ trigger:
 
 action:
   - choose:
-      # SCENARIUSZ 1: Brak prądu / Niskie napięcie
+      # SCENARIUSZ 1
       - conditions:
           - condition: trigger
             id: grid_fail
@@ -168,11 +169,10 @@ action:
           - service: switch.turn_off
             target: !input targets_group_1
 
-      # SCENARIUSZ 2: Bateria spada (Poziom 1)
+      # SCENARIUSZ 2
       - conditions:
           - condition: trigger
             id: soc_1
-          # Opcjonalnie: Działa tylko, jeśli napięcie jest niskie (tryb off-grid)
           - condition: or
             conditions:
               - condition: numeric_state
@@ -192,7 +192,7 @@ action:
           - service: switch.turn_off
             target: !input targets_group_2
 
-      # SCENARIUSZ 3: Bateria krytyczna (Poziom 2)
+      # SCENARIUSZ 3
       - conditions:
           - condition: trigger
             id: soc_2
@@ -215,11 +215,10 @@ action:
           - service: switch.turn_off
             target: !input targets_group_3
 
-      # SCENARIUSZ 4: Powrót zasilania
+      # SCENARIUSZ 4
       - conditions:
           - condition: trigger
             id: grid_ok
-          # Sprawdź czy WSZYSTKIE 3 fazy są OK
           - condition: numeric_state
             entity_id: !input grid_voltage_l1
             above: !input voltage_recovery
