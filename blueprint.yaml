@@ -1,0 +1,247 @@
+blueprint:
+  name: "Zarządzanie Obwodami: Ochrona Napięciowa i Bateryjna"
+  description: >
+    Automatyczny system zarządzania obwodami (Load Shedding).
+    
+    JAK TO DZIAŁA:
+    1. AWARIA SIECI (Spadek napięcia < Limit) -> Wyłącza "Obwody Krytyczne" (np. Piekarnik).
+    2. SŁABA BATERIA (SOC < Poziom 1) -> Wyłącza "Obwody Ostrzegawcze" (np. Garaż).
+    3. PUSTA BATERIA (SOC < Poziom 2) -> Wyłącza "Obwody Ostateczne" (Reszta domu).
+    
+    POWRÓT: Gdy napięcie na wszystkich fazach wróci powyżej Limitu Powrotu.
+  domain: automation
+  # Link do Twojego repozytorium (ułatwia aktualizacje w przyszłości)
+  source_url: https://github.com/zxvxv/obwody/blob/main/blueprint.yaml
+  input:
+    # --- CZUJNIKI (To co mierzy) ---
+    grid_voltage_l1:
+      name: Sensor Napięcia L1
+      selector:
+        entity:
+          domain: sensor
+          device_class: voltage
+    grid_voltage_l2:
+      name: Sensor Napięcia L2
+      selector:
+        entity:
+          domain: sensor
+          device_class: voltage
+    grid_voltage_l3:
+      name: Sensor Napięcia L3
+      selector:
+        entity:
+          domain: sensor
+          device_class: voltage
+    battery_soc:
+      name: Sensor Baterii (SOC)
+      selector:
+        entity:
+          domain: sensor
+          device_class: battery
+
+    # --- KONFIGURACJA PROGÓW (Liczby) ---
+    voltage_limit:
+      name: Próg Napięcia - AWARIA (V)
+      description: Poniżej tego napięcia system uzna awarię i wyłączy pierwszą grupę.
+      default: 190
+      selector:
+        number:
+          min: 150
+          max: 230
+          unit_of_measurement: V
+          mode: box
+    
+    soc_limit_1:
+      name: Próg Baterii - OSTRZEGAWCZY (%)
+      description: Przy ilu % wyłączyć drugą grupę urządzeń?
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    soc_limit_2:
+      name: Próg Baterii - KRYTYCZNY (%)
+      description: Przy ilu % wyłączyć resztę domu (Total Shutdown)?
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+
+    # --- WYBÓR OBWODÓW (To co wyłączamy) ---
+    targets_group_1:
+      name: GRUPA 1: Obwody do wyłączenia przy AWARII SIECI
+      description: Wybierz urządzenia, które gasną natychmiast przy zaniku fazy.
+      selector:
+        target:
+          entity:
+            domain: switch
+
+    targets_group_2:
+      name: GRUPA 2: Obwody do wyłączenia przy SŁABEJ BATERII
+      description: Wybierz urządzenia, które gasną przy pierwszym progu SOC.
+      selector:
+        target:
+          entity:
+            domain: switch
+
+    targets_group_3:
+      name: GRUPA 3: Obwody do wyłączenia przy PUSTEJ BATERII
+      description: Wybierz urządzenia, które gasną na samym końcu.
+      selector:
+        target:
+          entity:
+            domain: switch
+
+    # --- POWRÓT ZASILANIA ---
+    voltage_recovery:
+      name: Próg Napięcia - POWRÓT (V)
+      description: Powyżej tego napięcia system przywróci zasilanie.
+      default: 215
+      selector:
+        number:
+          min: 190
+          max: 250
+          unit_of_measurement: V
+          mode: box
+
+# --- LOGIKA DZIAŁANIA (Silnik) ---
+trigger:
+  # Awaria napięcia (L1, L2 lub L3)
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l1
+    below: !input voltage_limit
+    id: grid_fail
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l2
+    below: !input voltage_limit
+    id: grid_fail
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l3
+    below: !input voltage_limit
+    id: grid_fail
+    
+  # Spadek SOC (Poziom 1)
+  - platform: numeric_state
+    entity_id: !input battery_soc
+    below: !input soc_limit_1
+    id: soc_1
+    
+  # Spadek SOC (Poziom 2)
+  - platform: numeric_state
+    entity_id: !input battery_soc
+    below: !input soc_limit_2
+    id: soc_2
+
+  # Powrót napięcia (Wszystkie fazy OK)
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l1
+    above: !input voltage_recovery
+    for: "00:00:30"
+    id: grid_ok
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l2
+    above: !input voltage_recovery
+    for: "00:00:30"
+    id: grid_ok
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l3
+    above: !input voltage_recovery
+    for: "00:00:30"
+    id: grid_ok
+
+action:
+  - choose:
+      # SCENARIUSZ 1: Brak prądu / Niskie napięcie
+      - conditions:
+          - condition: trigger
+            id: grid_fail
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "⚡ OCHRONA OBWODÓW"
+              message: "Napięcie niskie! Wyłączam Grupę 1 (Awaryjną)."
+          - service: switch.turn_off
+            target: !input targets_group_1
+
+      # SCENARIUSZ 2: Bateria spada (Poziom 1)
+      - conditions:
+          - condition: trigger
+            id: soc_1
+          # Opcjonalnie: Działa tylko, jeśli napięcie jest niskie (tryb off-grid)
+          - condition: or
+            conditions:
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l1
+                below: !input voltage_limit
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l2
+                below: !input voltage_limit
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l3
+                below: !input voltage_limit
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "🔋 OCHRONA BATERII (I stopień)"
+              message: "Bateria słabnie. Wyłączam Grupę 2."
+          - service: switch.turn_off
+            target: !input targets_group_2
+
+      # SCENARIUSZ 3: Bateria krytyczna (Poziom 2)
+      - conditions:
+          - condition: trigger
+            id: soc_2
+          - condition: or
+            conditions:
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l1
+                below: !input voltage_limit
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l2
+                below: !input voltage_limit
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l3
+                below: !input voltage_limit
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "🪫 OCHRONA BATERII (Krytyczna)"
+              message: "Bateria rozładowana! Wyłączam Grupę 3."
+          - service: switch.turn_off
+            target: !input targets_group_3
+
+      # SCENARIUSZ 4: Powrót zasilania
+      - conditions:
+          - condition: trigger
+            id: grid_ok
+          # Sprawdź czy WSZYSTKIE 3 fazy są OK
+          - condition: numeric_state
+            entity_id: !input grid_voltage_l1
+            above: !input voltage_recovery
+          - condition: numeric_state
+            entity_id: !input grid_voltage_l2
+            above: !input voltage_recovery
+          - condition: numeric_state
+            entity_id: !input grid_voltage_l3
+            above: !input voltage_recovery
+        sequence:
+          - service: persistent_notification.create
+            data:
+              title: "✅ ZASILANIE PRZYWRÓCONE"
+              message: "Parametry sieci OK. Uruchamiam obwody sekwencyjnie."
+          - delay: "00:00:05"
+          - service: switch.turn_on
+            target: !input targets_group_1
+          - delay: "00:00:05"
+          - service: switch.turn_on
+            target: !input targets_group_2
+          - delay: "00:00:05"
+          - service: switch.turn_on
+            target: !input targets_group_3
+mode: restart
