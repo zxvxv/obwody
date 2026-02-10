@@ -4,36 +4,35 @@ blueprint:
     Automatyczny system zarządzania obwodami (Load Shedding).
     
     JAK TO DZIAŁA:
-    1. AWARIA SIECI (Spadek napięcia < Limit) -> Wyłącza "Obwody Krytyczne" (np. Piekarnik).
-    2. SŁABA BATERIA (SOC < Poziom 1) -> Wyłącza "Obwody Ostrzegawcze" (np. Garaż).
-    3. PUSTA BATERIA (SOC < Poziom 2) -> Wyłącza "Obwody Ostateczne" (Reszta domu).
+    1. AWARIA SIECI (Spadek napięcia < Limit) -> Wyłącza "Obwody Krytyczne".
+    2. SŁABA BATERIA (SOC < Poziom 1) -> Wyłącza "Obwody Ostrzegawcze".
+    3. PUSTA BATERIA (SOC < Poziom 2) -> Wyłącza "Obwody Ostateczne".
     
     POWRÓT: Gdy napięcie na wszystkich fazach wróci powyżej Limitu Powrotu.
   domain: automation
-  # Link do Twojego repozytorium (ułatwia aktualizacje w przyszłości)
   source_url: https://github.com/zxvxv/obwody/blob/main/blueprint.yaml
   input:
     # --- CZUJNIKI (To co mierzy) ---
     grid_voltage_l1:
-      name: Sensor Napięcia L1
+      name: "Sensor Napięcia L1"
       selector:
         entity:
           domain: sensor
           device_class: voltage
     grid_voltage_l2:
-      name: Sensor Napięcia L2
+      name: "Sensor Napięcia L2"
       selector:
         entity:
           domain: sensor
           device_class: voltage
     grid_voltage_l3:
-      name: Sensor Napięcia L3
+      name: "Sensor Napięcia L3"
       selector:
         entity:
           domain: sensor
           device_class: voltage
     battery_soc:
-      name: Sensor Baterii (SOC)
+      name: "Sensor Baterii (SOC)"
       selector:
         entity:
           domain: sensor
@@ -41,8 +40,8 @@ blueprint:
 
     # --- KONFIGURACJA PROGÓW (Liczby) ---
     voltage_limit:
-      name: Próg Napięcia - AWARIA (V)
-      description: Poniżej tego napięcia system uzna awarię i wyłączy pierwszą grupę.
+      name: "Próg Napięcia - AWARIA (V)"
+      description: "Poniżej tego napięcia system uzna awarię i wyłączy pierwszą grupę."
       default: 190
       selector:
         number:
@@ -52,8 +51,8 @@ blueprint:
           mode: box
     
     soc_limit_1:
-      name: Próg Baterii - OSTRZEGAWCZY (%)
-      description: Przy ilu % wyłączyć drugą grupę urządzeń?
+      name: "Próg Baterii - OSTRZEGAWCZY (%)"
+      description: "Przy ilu % wyłączyć drugą grupę urządzeń?"
       default: 80
       selector:
         number:
@@ -63,8 +62,8 @@ blueprint:
           mode: slider
 
     soc_limit_2:
-      name: Próg Baterii - KRYTYCZNY (%)
-      description: Przy ilu % wyłączyć resztę domu (Total Shutdown)?
+      name: "Próg Baterii - KRYTYCZNY (%)"
+      description: "Przy ilu % wyłączyć resztę domu (Total Shutdown)?"
       default: 20
       selector:
         number:
@@ -75,24 +74,24 @@ blueprint:
 
     # --- WYBÓR OBWODÓW (To co wyłączamy) ---
     targets_group_1:
-      name: GRUPA 1: Obwody do wyłączenia przy AWARII SIECI
-      description: Wybierz urządzenia, które gasną natychmiast przy zaniku fazy.
+      name: "GRUPA 1: Obwody do wyłączenia przy AWARII SIECI"
+      description: "Wybierz urządzenia, które gasną natychmiast przy zaniku fazy."
       selector:
         target:
           entity:
             domain: switch
 
     targets_group_2:
-      name: GRUPA 2: Obwody do wyłączenia przy SŁABEJ BATERII
-      description: Wybierz urządzenia, które gasną przy pierwszym progu SOC.
+      name: "GRUPA 2: Obwody do wyłączenia przy SŁABEJ BATERII"
+      description: "Wybierz urządzenia, które gasną przy pierwszym progu SOC."
       selector:
         target:
           entity:
             domain: switch
 
     targets_group_3:
-      name: GRUPA 3: Obwody do wyłączenia przy PUSTEJ BATERII
-      description: Wybierz urządzenia, które gasną na samym końcu.
+      name: "GRUPA 3: Obwody do wyłączenia przy PUSTEJ BATERII"
+      description: "Wybierz urządzenia, które gasną na samym końcu."
       selector:
         target:
           entity:
@@ -100,8 +99,8 @@ blueprint:
 
     # --- POWRÓT ZASILANIA ---
     voltage_recovery:
-      name: Próg Napięcia - POWRÓT (V)
-      description: Powyżej tego napięcia system przywróci zasilanie.
+      name: "Próg Napięcia - POWRÓT (V)"
+      description: "Powyżej tego napięcia system przywróci zasilanie."
       default: 215
       selector:
         number:
