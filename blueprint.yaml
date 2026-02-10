@@ -1,15 +1,17 @@
 blueprint:
-  name: "Zarządzanie Obwodami v3 (Deye Default)"
+  name: "Obwody Krytyczne (Deye Default)"
   description: >
-    Automatyczny system zarządzania obwodami (Load Shedding).
-    Domyślnie skonfigurowany pod falowniki Deye, ale można zmienić sensory.
+    System ochrony zasilania.
+    
+    1. AWARIA SIECI (< Limit V) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
+    2. SŁABA BATERIA (< Limit 1) -> Wyłącza GRUPĘ 2 (Ostrzegawcze).
+    3. PUSTA BATERIA (< Limit 2) -> Wyłącza GRUPĘ 3 (Reszta domu).
   domain: automation
   source_url: https://github.com/zxvxv/obwody/blob/main/blueprint.yaml
   input:
     # --- CZUJNIKI ---
     grid_voltage_l1:
       name: "Sensor Napięcia L1"
-      # Domyślnie Twoja encja:
       default: sensor.deye_inverter_grid_l1_voltage
       selector:
         entity:
@@ -17,7 +19,6 @@ blueprint:
           device_class: voltage
     grid_voltage_l2:
       name: "Sensor Napięcia L2"
-      # Domyślnie Twoja encja:
       default: sensor.deye_inverter_grid_l2_voltage
       selector:
         entity:
@@ -25,7 +26,6 @@ blueprint:
           device_class: voltage
     grid_voltage_l3:
       name: "Sensor Napięcia L3"
-      # Domyślnie Twoja encja:
       default: sensor.deye_inverter_grid_l3_voltage
       selector:
         entity:
@@ -33,17 +33,15 @@ blueprint:
           device_class: voltage
     battery_soc:
       name: "Sensor Baterii (SOC)"
-      # Domyślnie Twoja encja:
       default: sensor.deye_inverter_battery_bms_soc
       selector:
         entity:
           domain: sensor
-          # Usunąłem 'device_class: battery', żeby widział encje Deye bez problemu
+          # Bez filtra device_class, żeby widział wszystkie sensory
 
     # --- PROGI ---
     voltage_limit:
       name: "Próg Napięcia - AWARIA (V)"
-      description: "Poniżej tego napięcia system uzna awarię."
       default: 190
       selector:
         number:
@@ -54,7 +52,6 @@ blueprint:
     
     soc_limit_1:
       name: "Próg Baterii - OSTRZEGAWCZY (%)"
-      description: "Przy ilu % wyłączyć drugą grupę?"
       default: 80
       selector:
         number:
@@ -65,7 +62,6 @@ blueprint:
 
     soc_limit_2:
       name: "Próg Baterii - KRYTYCZNY (%)"
-      description: "Przy ilu % wyłączyć resztę domu?"
       default: 20
       selector:
         number:
@@ -76,24 +72,24 @@ blueprint:
 
     # --- OBWODY ---
     targets_group_1:
-      name: "GRUPA 1: Obwody AWARIA SIECI"
-      description: "Te urządzenia gasną natychmiast przy zaniku fazy."
+      name: "GRUPA 1: Awaria Sieci / Hard Stop"
+      description: "Te urządzenia gasną OD RAZU (5 dużych odbiorników)."
       selector:
         target:
           entity:
             domain: switch
 
     targets_group_2:
-      name: "GRUPA 2: Obwody SŁABA BATERIA"
-      description: "Te urządzenia gasną przy pierwszym progu SOC."
+      name: "GRUPA 2: Słaba Bateria"
+      description: "Te urządzenia gasną przy pierwszym progu (np. 80%)."
       selector:
         target:
           entity:
             domain: switch
 
     targets_group_3:
-      name: "GRUPA 3: Obwody PUSTA BATERIA"
-      description: "Te urządzenia gasną na końcu."
+      name: "GRUPA 3: Pusta Bateria / Full Shutdown"
+      description: "Te urządzenia gasną na końcu (reszta z 12)."
       selector:
         target:
           entity:
@@ -102,7 +98,6 @@ blueprint:
     # --- POWRÓT ---
     voltage_recovery:
       name: "Próg Napięcia - POWRÓT (V)"
-      description: "Powyżej tego napięcia system przywróci zasilanie."
       default: 215
       selector:
         number:
@@ -111,7 +106,6 @@ blueprint:
           unit_of_measurement: V
           mode: box
 
-# --- LOGIKA ---
 trigger:
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
@@ -125,17 +119,14 @@ trigger:
     entity_id: !input grid_voltage_l3
     below: !input voltage_limit
     id: grid_fail
-    
   - platform: numeric_state
     entity_id: !input battery_soc
     below: !input soc_limit_1
     id: soc_1
-    
   - platform: numeric_state
     entity_id: !input battery_soc
     below: !input soc_limit_2
     id: soc_2
-
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     above: !input voltage_recovery
@@ -154,7 +145,6 @@ trigger:
 
 action:
   - choose:
-      # SCENARIUSZ 1
       - conditions:
           - condition: trigger
             id: grid_fail
@@ -165,8 +155,6 @@ action:
               message: "Wyłączam Grupę 1."
           - service: switch.turn_off
             target: !input targets_group_1
-
-      # SCENARIUSZ 2
       - conditions:
           - condition: trigger
             id: soc_1
@@ -188,8 +176,6 @@ action:
               message: "Wyłączam Grupę 2."
           - service: switch.turn_off
             target: !input targets_group_2
-
-      # SCENARIUSZ 3
       - conditions:
           - condition: trigger
             id: soc_2
@@ -211,8 +197,6 @@ action:
               message: "Wyłączam Grupę 3."
           - service: switch.turn_off
             target: !input targets_group_3
-
-      # SCENARIUSZ 4
       - conditions:
           - condition: trigger
             id: grid_ok
