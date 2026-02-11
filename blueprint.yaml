@@ -1,9 +1,14 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery)"
+  name: "Obwody Krytyczne (Smart Recovery) v1.01"
   description: >
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
-    1. AWARIA SIECI (< Limit V) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
+    HISTORIA WERSJI:
+    v1.01 - Paweł & Gemini: Dodano 5-sekundową zwłokę przy wykrywaniu awarii (Anty-Flicker).
+            Zapobiega to wyłączaniu piekarnika/mikrofali przy chwilowych spadkach napięcia.
+            Zaktualizowano składnię service -> action.
+
+    1. AWARIA SIECI (< Limit V przez 5s) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
     2. SŁABA BATERIA (< Limit 1) -> Wyłącza GRUPĘ 2 (Ostrzegawcze).
     3. PUSTA BATERIA (< Limit 2) -> Wyłącza GRUPĘ 3 (Reszta domu).
     
@@ -75,7 +80,7 @@ blueprint:
     # --- OBWODY ---
     targets_group_1:
       name: "GRUPA 1: Awaria Sieci / Hard Stop"
-      description: "Te urządzenia gasną PIERWSZE przy awarii, a wstają OSTATNIE (Duże AGD)."
+      description: "Te urządzenia gasną PIERWSZE przy awarii (po 5s), a wstają OSTATNIE (Duże AGD)."
       selector:
         target:
           entity:
@@ -109,18 +114,24 @@ blueprint:
           mode: box
 
 trigger:
+  # ZMIANA v1.01: Dodano 'for: 5s'. Awaria musi trwać min. 5 sekund, żeby wyłączyć prąd.
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     below: !input voltage_limit
+    for: "00:00:05"
     id: grid_fail
   - platform: numeric_state
     entity_id: !input grid_voltage_l2
     below: !input voltage_limit
+    for: "00:00:05"
     id: grid_fail
   - platform: numeric_state
     entity_id: !input grid_voltage_l3
     below: !input voltage_limit
+    for: "00:00:05"
     id: grid_fail
+  
+  # Trigger SOC działa natychmiastowo (bateria nie ma "skoków" jak napięcie)
   - platform: numeric_state
     entity_id: !input battery_soc
     below: !input soc_limit_1
@@ -129,6 +140,8 @@ trigger:
     entity_id: !input battery_soc
     below: !input soc_limit_2
     id: soc_2
+  
+  # Powrót wymaga stabilizacji przez 30 sekund (bez zmian)
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     above: !input voltage_recovery
@@ -151,15 +164,18 @@ action:
           - condition: trigger
             id: grid_fail
         sequence:
-          - service: persistent_notification.create
+          - action: persistent_notification.create
             data:
               title: "⚡ AWARIA"
-              message: "Napięcie spadło! Wyłączam Grupę 1 (Duże AGD)."
-          - service: switch.turn_off
+              message: "Napięcie poniżej limitu przez >5s! Wyłączam Grupę 1 (Duże AGD)."
+          - action: switch.turn_off
             target: !input targets_group_1
+            
       - conditions:
           - condition: trigger
             id: soc_1
+          # Warunek OR: Sprawdź czy chociaż jedna faza leży, zanim wyłączysz z powodu baterii
+          # (Chyba że chcesz chronić baterię też przy normalnej pracy - wtedy usuń ten OR)
           - condition: or
             conditions:
               - condition: numeric_state
@@ -172,12 +188,13 @@ action:
                 entity_id: !input grid_voltage_l3
                 below: !input voltage_limit
         sequence:
-          - service: persistent_notification.create
+          - action: persistent_notification.create
             data:
               title: "🔋 BATERIA SŁABA"
               message: "Wyłączam Grupę 2."
-          - service: switch.turn_off
+          - action: switch.turn_off
             target: !input targets_group_2
+            
       - conditions:
           - condition: trigger
             id: soc_2
@@ -193,12 +210,13 @@ action:
                 entity_id: !input grid_voltage_l3
                 below: !input voltage_limit
         sequence:
-          - service: persistent_notification.create
+          - action: persistent_notification.create
             data:
               title: "🪫 BATERIA KRYTYCZNA"
               message: "Wyłączam Grupę 3 (Total Shutdown)."
-          - service: switch.turn_off
+          - action: switch.turn_off
             target: !input targets_group_3
+            
       - conditions:
           - condition: trigger
             id: grid_ok
@@ -212,20 +230,20 @@ action:
             entity_id: !input grid_voltage_l3
             above: !input voltage_recovery
         sequence:
-          - service: persistent_notification.create
+          - action: persistent_notification.create
             data:
               title: "✅ POWRÓT ZASILANIA"
-              message: "Sieć stabilna >30s. Przywracam zasilanie kaskadowo (od najważniejszych)."
+              message: "Sieć stabilna >30s. Przywracam zasilanie kaskadowo."
           # 1. Najpierw najważniejsze (Grupa 3)
           - delay: "00:00:05"
-          - service: switch.turn_on
+          - action: switch.turn_on
             target: !input targets_group_3
           # 2. Potem średnie (Grupa 2)
           - delay: "00:00:05"
-          - service: switch.turn_on
+          - action: switch.turn_on
             target: !input targets_group_2
           # 3. Na końcu obciążenia (Grupa 1)
           - delay: "00:00:05"
-          - service: switch.turn_on
+          - action: switch.turn_on
             target: !input targets_group_1
 mode: restart
