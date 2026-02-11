@@ -4,8 +4,8 @@ blueprint:
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     HISTORIA WERSJI:
-    v1.01 - Paweł & Gemini: Dodano 5-sekundową zwłokę przy wykrywaniu awarii (Anty-Flicker).
-            Zapobiega to wyłączaniu piekarnika/mikrofali przy chwilowych spadkach napięcia.
+    v1.01 - Dodano 5-sekundową zwłokę przy wykrywaniu awarii (Anty-Flicker).
+            Zapobiega to wyłączaniu przy chwilowych spadkach napięcia.
             Zaktualizowano składnię service -> action.
 
     1. AWARIA SIECI (< Limit V przez 5s) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
