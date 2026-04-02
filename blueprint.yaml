@@ -1,19 +1,21 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery) v1.01"
+  name: "Obwody Krytyczne (Smart Recovery) v1.02"
   description: >
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     HISTORIA WERSJI:
+    v1.02 - Dodano GRUPĘ 0 (Natychmiastową) - wyłącza się bezwarunkowo przy zaniku napięcia (0 sek opóźnienia).
     v1.01 - Dodano 5-sekundową zwłokę przy wykrywaniu awarii (Anty-Flicker).
             Zapobiega to wyłączaniu przy chwilowych spadkach napięcia.
             Zaktualizowano składnię service -> action.
 
+    0. ZANIK NAPIĘCIA (< Limit V natychmiast) -> Wyłącza GRUPĘ 0 (Natychmiastowa).
     1. AWARIA SIECI (< Limit V przez 5s) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
     2. SŁABA BATERIA (< Limit 1) -> Wyłącza GRUPĘ 2 (Ostrzegawcze).
     3. PUSTA BATERIA (< Limit 2) -> Wyłącza GRUPĘ 3 (Reszta domu).
     
     POWRÓT ZASILANIA (Sekwencja Startu):
-    Najpierw GRUPA 3 (Najważniejsze) -> potem GRUPA 2 -> na końcu GRUPA 1 (Duże obciążenia).
+    Najpierw GRUPA 3 (Najważniejsze) -> potem GRUPA 2 -> potem GRUPA 1 -> na końcu GRUPA 0.
   domain: automation
   source_url: https://github.com/zxvxv/obwody/blob/main/blueprint.yaml
   input:
@@ -78,9 +80,17 @@ blueprint:
           mode: slider
 
     # --- OBWODY ---
+    targets_immediate:
+      name: "GRUPA 0: Natychmiastowa / Hard Stop"
+      description: "Te urządzenia gasną BEZ ZWŁOKI (0s) gdy tylko napięcie spadnie poniżej limitu."
+      selector:
+        target:
+          entity:
+            domain: switch
+
     targets_group_1:
-      name: "GRUPA 1: Awaria Sieci / Hard Stop"
-      description: "Te urządzenia gasną PIERWSZE przy awarii (po 5s), a wstają OSTATNIE (Duże AGD)."
+      name: "GRUPA 1: Awaria Sieci (po 5s)"
+      description: "Te urządzenia gasną PIERWSZE przy awarii (po 5s), a wstają jako jedne z ostatnich (Duże AGD)."
       selector:
         target:
           entity:
@@ -114,6 +124,20 @@ blueprint:
           mode: box
 
 trigger:
+  # Wyzwalacze NATYCHMIASTOWE (v1.02) - bez parametru 'for'
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l1
+    below: !input voltage_limit
+    id: grid_fail_fast
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l2
+    below: !input voltage_limit
+    id: grid_fail_fast
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l3
+    below: !input voltage_limit
+    id: grid_fail_fast
+
   # ZMIANA v1.01: Dodano 'for: 5s'. Awaria musi trwać min. 5 sekund, żeby wyłączyć prąd.
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
@@ -160,6 +184,19 @@ trigger:
 
 action:
   - choose:
+      # Nowa akcja dla GRUPY 0 (Natychmiastowej)
+      - conditions:
+          - condition: trigger
+            id: grid_fail_fast
+        sequence:
+          - action: persistent_notification.create
+            data:
+              title: "⚡ ZANIK NAPIĘCIA"
+              message: "Napięcie spadło! Natychmiast wyłączam Grupę 0."
+          - action: switch.turn_off
+            target: !input targets_immediate
+
+      # Stara akcja dla GRUPY 1 (Po 5s)
       - conditions:
           - condition: trigger
             id: grid_fail
@@ -220,15 +257,6 @@ action:
       - conditions:
           - condition: trigger
             id: grid_ok
-          - condition: numeric_state
-            entity_id: !input grid_voltage_l1
-            above: !input voltage_recovery
-          - condition: numeric_state
-            entity_id: !input grid_voltage_l2
-            above: !input voltage_recovery
-          - condition: numeric_state
-            entity_id: !input grid_voltage_l3
-            above: !input voltage_recovery
         sequence:
           - action: persistent_notification.create
             data:
@@ -246,4 +274,8 @@ action:
           - delay: "00:00:05"
           - action: switch.turn_on
             target: !input targets_group_1
+          # 4. Natychmiastowe obwody na samym końcu (Grupa 0)
+          - delay: "00:00:05"
+          - action: switch.turn_on
+            target: !input targets_immediate
 mode: restart
