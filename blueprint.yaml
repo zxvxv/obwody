@@ -1,16 +1,19 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery) v1.03"
+  name: "Obwody Krytyczne (Smart Recovery) v1.04"
   description: >
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     HISTORIA WERSJI:
+    v1.04 - OCHRONA EEPROM: Dodano warunki weryfikujące stan przed wysłaniem komendy zapisu. 
+            Modbus/przekaźnik otrzyma komendę tylko, gdy jego stan faktycznie wymaga zmiany.
+            Dodano 1-sekundową zwłokę dla GRUPY 0 w celu odsiania fałszywych alarmów odczytu.
     v1.03 - Poprawka błędu 'Missing input': dodano parametr 'default: {}' dla GRUPY 0, czyniąc ją opcjonalną i zabezpieczając stare automatyzacje przed błędami walidacji.
     v1.02 - Dodano GRUPĘ 0 (Natychmiastową) - wyłącza się bezwarunkowo przy zaniku napięcia (0 sek opóźnienia).
     v1.01 - Dodano 5-sekundową zwłokę przy wykrywaniu awarii (Anty-Flicker).
             Zapobiega to wyłączaniu przy chwilowych spadkach napięcia.
             Zaktualizowano składnię service -> action.
 
-    0. ZANIK NAPIĘCIA (< Limit V natychmiast) -> Wyłącza GRUPĘ 0 (Natychmiastowa).
+    0. ZANIK NAPIĘCIA (< Limit V przez 1s) -> Wyłącza GRUPĘ 0 (Natychmiastowa).
     1. AWARIA SIECI (< Limit V przez 5s) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
     2. SŁABA BATERIA (< Limit 1) -> Wyłącza GRUPĘ 2 (Ostrzegawcze).
     3. PUSTA BATERIA (< Limit 2) -> Wyłącza GRUPĘ 3 (Reszta domu).
@@ -83,7 +86,7 @@ blueprint:
     # --- OBWODY ---
     targets_immediate:
       name: "GRUPA 0: Natychmiastowa / Hard Stop"
-      description: "Te urządzenia gasną BEZ ZWŁOKI (0s) gdy tylko napięcie spadnie poniżej limitu."
+      description: "Te urządzenia gasną po 1s gdy tylko napięcie spadnie poniżej limitu."
       default: {}
       selector:
         target:
@@ -129,21 +132,24 @@ blueprint:
           mode: box
 
 trigger:
-  # Wyzwalacze NATYCHMIASTOWE (v1.02) - bez parametru 'for'
+  # Wyzwalacze GRUPY 0 (v1.04) - czas 1 sekunda (odsiewanie błędów Modbus)
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     below: !input voltage_limit
+    for: "00:00:01"
     id: grid_fail_fast
   - platform: numeric_state
     entity_id: !input grid_voltage_l2
     below: !input voltage_limit
+    for: "00:00:01"
     id: grid_fail_fast
   - platform: numeric_state
     entity_id: !input grid_voltage_l3
     below: !input voltage_limit
+    for: "00:00:01"
     id: grid_fail_fast
 
-  # ZMIANA v1.01: Dodano 'for: 5s'. Awaria musi trwać min. 5 sekund, żeby wyłączyć prąd.
+  # Wyzwalacze GRUPY 1 - Awaria musi trwać min. 5 sekund
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     below: !input voltage_limit
@@ -160,7 +166,7 @@ trigger:
     for: "00:00:05"
     id: grid_fail
   
-  # Trigger SOC działa natychmiastowo (bateria nie ma "skoków" jak napięcie)
+  # Trigger SOC działa natychmiastowo
   - platform: numeric_state
     entity_id: !input battery_soc
     below: !input soc_limit_1
@@ -170,7 +176,7 @@ trigger:
     below: !input soc_limit_2
     id: soc_2
   
-  # Powrót wymaga stabilizacji przez 30 sekund (bez zmian)
+  # Powrót wymaga stabilizacji przez 30 sekund
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     above: !input voltage_recovery
@@ -188,35 +194,54 @@ trigger:
     id: grid_ok
 
 action:
+  # Deklaracja zmiennych ułatwiających weryfikację stanu celów w szablonach
+  - variables:
+      t_0: !input targets_immediate
+      t_1: !input targets_group_1
+      t_2: !input targets_group_2
+      t_3: !input targets_group_3
+
   - choose:
-      # Nowa akcja dla GRUPY 0 (Natychmiastowej)
+      # Akcja dla GRUPY 0 (Po 1s)
       - conditions:
           - condition: trigger
             id: grid_fail_fast
         sequence:
-          - action: persistent_notification.create
-            data:
-              title: "⚡ ZANIK NAPIĘCIA"
-              message: "Napięcie spadło! Natychmiast wyłączam Grupę 0."
-          - action: switch.turn_off
-            target: !input targets_immediate
+          - if:
+              - condition: template
+                value_template: >
+                  {% set e = t_0.entity_id | default([]) %}
+                  {{ expand(e) | selectattr('state', 'eq', 'on') | list | length > 0 if e else true }}
+            then:
+              - action: persistent_notification.create
+                data:
+                  title: "⚡ ZANIK NAPIĘCIA"
+                  message: "Napięcie spadło (poniżej limitu przez 1s)! Wyłączam Grupę 0."
+              - action: switch.turn_off
+                target: !input targets_immediate
 
-      # Stara akcja dla GRUPY 1 (Po 5s)
+      # Akcja dla GRUPY 1 (Po 5s)
       - conditions:
           - condition: trigger
             id: grid_fail
         sequence:
-          - action: persistent_notification.create
-            data:
-              title: "⚡ AWARIA"
-              message: "Napięcie poniżej limitu przez >5s! Wyłączam Grupę 1 (Duże AGD)."
-          - action: switch.turn_off
-            target: !input targets_group_1
+          - if:
+              - condition: template
+                value_template: >
+                  {% set e = t_1.entity_id | default([]) %}
+                  {{ expand(e) | selectattr('state', 'eq', 'on') | list | length > 0 if e else true }}
+            then:
+              - action: persistent_notification.create
+                data:
+                  title: "⚡ AWARIA"
+                  message: "Napięcie poniżej limitu przez >5s! Wyłączam Grupę 1 (Duże AGD)."
+              - action: switch.turn_off
+                target: !input targets_group_1
             
+      # Akcja dla GRUPY 2 (Słaba bateria)
       - conditions:
           - condition: trigger
             id: soc_1
-          # Warunek OR: Sprawdź czy chociaż jedna faza leży, zanim wyłączysz z powodu baterii
           - condition: or
             conditions:
               - condition: numeric_state
@@ -229,13 +254,20 @@ action:
                 entity_id: !input grid_voltage_l3
                 below: !input voltage_limit
         sequence:
-          - action: persistent_notification.create
-            data:
-              title: "🔋 BATERIA SŁABA"
-              message: "Wyłączam Grupę 2."
-          - action: switch.turn_off
-            target: !input targets_group_2
+          - if:
+              - condition: template
+                value_template: >
+                  {% set e = t_2.entity_id | default([]) %}
+                  {{ expand(e) | selectattr('state', 'eq', 'on') | list | length > 0 if e else true }}
+            then:
+              - action: persistent_notification.create
+                data:
+                  title: "🔋 BATERIA SŁABA"
+                  message: "Wyłączam Grupę 2."
+              - action: switch.turn_off
+                target: !input targets_group_2
             
+      # Akcja dla GRUPY 3 (Bateria krytyczna)
       - conditions:
           - condition: trigger
             id: soc_2
@@ -251,35 +283,82 @@ action:
                 entity_id: !input grid_voltage_l3
                 below: !input voltage_limit
         sequence:
-          - action: persistent_notification.create
-            data:
-              title: "🪫 BATERIA KRYTYCZNA"
-              message: "Wyłączam Grupę 3 (Total Shutdown)."
-          - action: switch.turn_off
-            target: !input targets_group_3
+          - if:
+              - condition: template
+                value_template: >
+                  {% set e = t_3.entity_id | default([]) %}
+                  {{ expand(e) | selectattr('state', 'eq', 'on') | list | length > 0 if e else true }}
+            then:
+              - action: persistent_notification.create
+                data:
+                  title: "🪫 BATERIA KRYTYCZNA"
+                  message: "Wyłączam Grupę 3 (Total Shutdown)."
+              - action: switch.turn_off
+                target: !input targets_group_3
             
+      # POWRÓT ZASILANIA
       - conditions:
           - condition: trigger
             id: grid_ok
         sequence:
+          # Ochrona przed powiadomieniem-widmo: sprawdź, czy jakakolwiek encja z grup faktycznie jest wyłączona
+          - condition: template
+            value_template: >
+              {% set ns = namespace(all_e=[]) %}
+              {% for t in [t_0, t_1, t_2, t_3] %}
+                {% set e = t.entity_id | default([]) %}
+                {% if e is string %}{% set e = [e] %}{% endif %}
+                {% set ns.all_e = ns.all_e + e %}
+              {% endfor %}
+              {{ expand(ns.all_e) | selectattr('state', 'eq', 'off') | list | length > 0 if ns.all_e else true }}
+          
           - action: persistent_notification.create
             data:
               title: "✅ POWRÓT ZASILANIA"
               message: "Sieć stabilna >30s. Przywracam zasilanie kaskadowo."
+          
           # 1. Najpierw najważniejsze (Grupa 3)
           - delay: "00:00:05"
-          - action: switch.turn_on
-            target: !input targets_group_3
-          # 2. Potem średnie (Grupa 2)
+          - if:
+              - condition: template
+                value_template: >
+                  {% set e = t_3.entity_id | default([]) %}
+                  {{ expand(e) | selectattr('state', 'eq', 'off') | list | length > 0 if e else true }}
+            then:
+              - action: switch.turn_on
+                target: !input targets_group_3
+          
+          # 2. Średnie (Grupa 2)
           - delay: "00:00:05"
-          - action: switch.turn_on
-            target: !input targets_group_2
-          # 3. Na końcu obciążenia (Grupa 1)
+          - if:
+              - condition: template
+                value_template: >
+                  {% set e = t_2.entity_id | default([]) %}
+                  {{ expand(e) | selectattr('state', 'eq', 'off') | list | length > 0 if e else true }}
+            then:
+              - action: switch.turn_on
+                target: !input targets_group_2
+          
+          # 3. Obciążenia (Grupa 1)
           - delay: "00:00:05"
-          - action: switch.turn_on
-            target: !input targets_group_1
-          # 4. Natychmiastowe obwody na samym końcu (Grupa 0)
+          - if:
+              - condition: template
+                value_template: >
+                  {% set e = t_1.entity_id | default([]) %}
+                  {{ expand(e) | selectattr('state', 'eq', 'off') | list | length > 0 if e else true }}
+            then:
+              - action: switch.turn_on
+                target: !input targets_group_1
+          
+          # 4. Natychmiastowe na samym końcu (Grupa 0)
           - delay: "00:00:05"
-          - action: switch.turn_on
-            target: !input targets_immediate
+          - if:
+              - condition: template
+                value_template: >
+                  {% set e = t_0.entity_id | default([]) %}
+                  {{ expand(e) | selectattr('state', 'eq', 'off') | list | length > 0 if e else true }}
+            then:
+              - action: switch.turn_on
+                target: !input targets_immediate
+
 mode: restart
