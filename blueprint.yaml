@@ -1,20 +1,20 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery) v1.09"
+  name: "Obwody Krytyczne (Smart Recovery) v1.10"
   description: >
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     HISTORIA WERSJI:
-    v1.09 - OFF-GRID RECOVERY (HISTEREZA): Dodano ścieżki powrotu dla zasilania z baterii. Jeśli w trakcie awarii sieci 
-            fotowoltaika podładuje magazyn o 3% powyżej progu odcięcia (sztywna histereza unikająca ping-ponga), 
-            skrypt autonomicznie przywróci wyłączone grupy (Grupę 3 przy progu krytycznym+3%, Grupę 2 przy ostrzegawczym+3%).
-    v1.08 - FIX IMPORTU (PARSER): Zastąpiono problematyczny szablon 'trigger.id' natywnym blokiem 'or' z bezpiecznym sprawdzeniem.
-    v1.07 - ZIMNY START / RESTART: Dodano natychmiastową diagnozę po restarcie systemu.
-    v1.06 - NAPRAWA IMPORTU HA: Zastąpiono szablony z '!input' natywnymi warunkami 'numeric_state'. Dodano 'mode: queued'.
+    v1.10 - FIX OBIEKTU SOC & ZIMNY POWRÓT: Naprawiono szablon odczytu z obiektu 'state' na 'state.state' w wyzwalaczach histerezy.
+            Dodano logikę przywracania zasilania OFF-GRID do modułu Zimnego Startu (uruchomienie przy naładowanej baterii).
+    v1.09 - OFF-GRID RECOVERY (HISTEREZA): Dodano ścieżki powrotu dla zasilania z baterii (+3% histerezy).
+    v1.08 - FIX IMPORTU (PARSER): Zastąpiono szablon 'trigger.id' natywnym blokiem 'or'.
+    v1.07 - ZIMNY START / RESTART: Dodano natychmiastową diagnozę spadków po restarcie systemu.
+    v1.06 - NAPRAWA IMPORTU HA: Zastąpiono '!input' w szablonach natywnymi warunkami. Dodano 'mode: queued'.
     v1.05 - KRYTYCZNA POPRAWKA: Logika EEPROM uwzględnia stany "unavailable"/"unknown".
     v1.04 - OCHRONA EEPROM: Weryfikacja stanu przed wysłaniem komendy zapisu. 
     v1.03 - Poprawka błędu 'Missing input' (default: {}).
     v1.02 - Dodano GRUPĘ 0 (Natychmiastową).
-    v1.01 - Dodano 5-sekundową zwłokę przy wykrywaniu awarii (Anty-Flicker).
+    v1.01 - Dodano 5-sekundową zwłokę przy wykrywaniu awarii.
 
     0. ZANIK NAPIĘCIA (< Limit V przez 1s) -> Wyłącza GRUPĘ 0 (Natychmiastowa).
     1. AWARIA SIECI (< Limit V przez 5s) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
@@ -188,16 +188,16 @@ trigger:
     id: soc_2
 
   # Triggery powrotu SOC (OFF-GRID) z twardą histerezą +3%
-  # Użycie offsetu matematycznego 'state - 3' eliminuje potrzebę stosowania !input w szablonach (błąd parsera HA)
+  # Prawidłowy odczyt z obiektu stanu poprzez 'state.state' eliminuje błędy matematyczne.
   - platform: numeric_state
     entity_id: !input battery_soc
     above: !input soc_limit_1
-    value_template: "{{ float(state, 0) - 3 }}"
+    value_template: "{{ float(state.state, 0) - 3 }}"
     id: soc_ok_1
   - platform: numeric_state
     entity_id: !input battery_soc
     above: !input soc_limit_2
-    value_template: "{{ float(state, 0) - 3 }}"
+    value_template: "{{ float(state.state, 0) - 3 }}"
     id: soc_ok_2
   
   # Powrót Sieci - Wymaga 30s stabilizacji (logika AND sprawdzana w akcji)
@@ -226,7 +226,7 @@ action:
       t_3: !input targets_group_3
 
   - choose:
-      # Akcja dla ZIMNEGO STARTU (Restart HA lub ręczne wywołanie - BEZPIECZNY WARUNEK)
+      # Akcja dla ZIMNEGO STARTU (Restart HA lub ręczne wywołanie)
       - conditions:
           - condition: or
             conditions:
@@ -235,7 +235,7 @@ action:
               - condition: template
                 value_template: "{{ trigger is not defined or trigger.id is not defined }}"
         sequence:
-          # --- SPRAWDZENIE AWARII SIECI PRZY STARCIE ---
+          # --- SPRAWDZENIE AWARII SIECI PRZY STARCIE (WYŁĄCZANIE) ---
           - if:
               - condition: or
                 conditions:
@@ -270,7 +270,46 @@ action:
                   - action: switch.turn_off
                     target: !input targets_group_1
 
-          # --- SPRAWDZENIE BATERII (OSTRZEGAWCZY) PRZY STARCIE ---
+          # --- ZIMNY START: BATERIA KRYTYCZNA (WYŁĄCZANIE) ---
+          - if:
+              - condition: numeric_state
+                entity_id: !input battery_soc
+                below: !input soc_limit_2
+            then:
+              - if:
+                  - condition: template
+                    value_template: >
+                      {% set e = t_3.entity_id | default([]) %}
+                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      title: "🪫 BATERIA KRYTYCZNA (Zimny Start)"
+                      message: "Krytyczny poziom baterii przy starcie! Odcinam Grupę 3."
+                  - action: switch.turn_off
+                    target: !input targets_group_3
+
+          # --- ZIMNY START: BATERIA RATUNKOWA (WŁĄCZANIE OFF-GRID) ---
+          - if:
+              - condition: numeric_state
+                entity_id: !input battery_soc
+                above: !input soc_limit_2
+                value_template: "{{ float(state.state, 0) - 3 }}"
+            then:
+              - if:
+                  - condition: template
+                    value_template: >
+                      {% set e = t_3.entity_id | default([]) %}
+                      {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      title: "☀️ OFF-GRID POWRÓT (Zimny Start)"
+                      message: "Magazyn naładowany po restarcie (+3% histerezy). Przywracam Grupę 3."
+                  - action: switch.turn_on
+                    target: !input targets_group_3
+
+          # --- ZIMNY START: BATERIA OSTRZEGAWCZA (WYŁĄCZANIE) ---
           - if:
               - condition: numeric_state
                 entity_id: !input battery_soc
@@ -289,24 +328,25 @@ action:
                   - action: switch.turn_off
                     target: !input targets_group_2
 
-          # --- SPRAWDZENIE BATERII (KRYTYCZNY) PRZY STARCIE ---
+          # --- ZIMNY START: BATERIA ŚREDNIA (WŁĄCZANIE OFF-GRID) ---
           - if:
               - condition: numeric_state
                 entity_id: !input battery_soc
-                below: !input soc_limit_2
+                above: !input soc_limit_1
+                value_template: "{{ float(state.state, 0) - 3 }}"
             then:
               - if:
                   - condition: template
                     value_template: >
-                      {% set e = t_3.entity_id | default([]) %}
-                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
+                      {% set e = t_2.entity_id | default([]) %}
+                      {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
                 then:
                   - action: persistent_notification.create
                     data:
-                      title: "🪫 BATERIA KRYTYCZNA (Zimny Start)"
-                      message: "Krytyczny poziom baterii przy starcie! Odcinam Grupę 3."
-                  - action: switch.turn_off
-                    target: !input targets_group_3
+                      title: "☀️ OFF-GRID POWRÓT (Zimny Start)"
+                      message: "Magazyn naładowany po restarcie (+3% histerezy). Przywracam Grupę 2."
+                  - action: switch.turn_on
+                    target: !input targets_group_2
 
       # Akcja dla GRUPY 0 (Po 1s)
       - conditions:
