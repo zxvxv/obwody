@@ -1,9 +1,13 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery) v1.04"
+  name: "Obwody Krytyczne (Smart Recovery) v1.05"
   description: >
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     HISTORIA WERSJI:
+    v1.05 - ZBIORCZY WYZWALACZ & EEPROM FIX: Usunięto wyścigi akcji (Race Condition) łącząc wyzwalacze w pakiety zbiorcze.
+            Logika EEPROM uwzględnia teraz stany "unavailable" i "unknown", zapobiegając blokadzie ratunkowej.
+            KRYTYCZNA POPRAWKA: Powrót zasilania wymaga teraz stabilizacji WSZYSTKICH 3 faz (wcześniej wystarczyła jedna).
+            KRYTYCZNA POPRAWKA: Puste grupy (brak urządzeń) zwracają FALSE, co eliminuje błędy wywołania pustych usług w HA.
     v1.04 - OCHRONA EEPROM: Dodano warunki weryfikujące stan przed wysłaniem komendy zapisu. 
             Modbus/przekaźnik otrzyma komendę tylko, gdy jego stan faktycznie wymaga zmiany.
             Dodano 1-sekundową zwłokę dla GRUPY 0 w celu odsiania fałszywych alarmów odczytu.
@@ -132,41 +136,25 @@ blueprint:
           mode: box
 
 trigger:
-  # Wyzwalacze GRUPY 0 (v1.04) - czas 1 sekunda (odsiewanie błędów Modbus)
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l1
-    below: !input voltage_limit
-    for: "00:00:01"
-    id: grid_fail_fast
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l2
-    below: !input voltage_limit
-    for: "00:00:01"
-    id: grid_fail_fast
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l3
-    below: !input voltage_limit
+  # Wyzwalacz GRUPY 0 (v1.05) - ZBIORCZY 1 sekunda (odsiewanie błędów Modbus, eliminacja wyścigów)
+  - platform: template
+    value_template: >-
+      {{ states('!input grid_voltage_l1') | float(250) < !input voltage_limit or 
+         states('!input grid_voltage_l2') | float(250) < !input voltage_limit or 
+         states('!input grid_voltage_l3') | float(250) < !input voltage_limit }}
     for: "00:00:01"
     id: grid_fail_fast
 
-  # Wyzwalacze GRUPY 1 - Awaria musi trwać min. 5 sekund
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l1
-    below: !input voltage_limit
-    for: "00:00:05"
-    id: grid_fail
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l2
-    below: !input voltage_limit
-    for: "00:00:05"
-    id: grid_fail
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l3
-    below: !input voltage_limit
+  # Wyzwalacz GRUPY 1 (v1.05) - ZBIORCZY Awaria min. 5 sekund
+  - platform: template
+    value_template: >-
+      {{ states('!input grid_voltage_l1') | float(250) < !input voltage_limit or 
+         states('!input grid_voltage_l2') | float(250) < !input voltage_limit or 
+         states('!input grid_voltage_l3') | float(250) < !input voltage_limit }}
     for: "00:00:05"
     id: grid_fail
   
-  # Trigger SOC działa natychmiastowo
+  # Trigger SOC działa natychmiastowo - bez zmian (jeden sensor, brak wyścigów)
   - platform: numeric_state
     entity_id: !input battery_soc
     below: !input soc_limit_1
@@ -176,20 +164,12 @@ trigger:
     below: !input soc_limit_2
     id: soc_2
   
-  # Powrót wymaga stabilizacji przez 30 sekund
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l1
-    above: !input voltage_recovery
-    for: "00:00:30"
-    id: grid_ok
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l2
-    above: !input voltage_recovery
-    for: "00:00:30"
-    id: grid_ok
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l3
-    above: !input voltage_recovery
+  # Powrót - ZBIORCZY wymaga stabilizacji przez 30 sekund WSZYSTKICH 3 FAZ logicznym AND
+  - platform: template
+    value_template: >-
+      {{ states('!input grid_voltage_l1') | float(0) > !input voltage_recovery and 
+         states('!input grid_voltage_l2') | float(0) > !input voltage_recovery and 
+         states('!input grid_voltage_l3') | float(0) > !input voltage_recovery }}
     for: "00:00:30"
     id: grid_ok
 
@@ -211,7 +191,7 @@ action:
               - condition: template
                 value_template: >
                   {% set e = t_0.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'eq', 'on') | list | length > 0 if e else true }}
+                  {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
             then:
               - action: persistent_notification.create
                 data:
@@ -229,7 +209,7 @@ action:
               - condition: template
                 value_template: >
                   {% set e = t_1.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'eq', 'on') | list | length > 0 if e else true }}
+                  {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
             then:
               - action: persistent_notification.create
                 data:
@@ -242,23 +222,17 @@ action:
       - conditions:
           - condition: trigger
             id: soc_1
-          - condition: or
-            conditions:
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l1
-                below: !input voltage_limit
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l2
-                below: !input voltage_limit
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l3
-                below: !input voltage_limit
+          - condition: template
+            value_template: >-
+              {{ states('!input grid_voltage_l1') | float(250) < !input voltage_limit or 
+                 states('!input grid_voltage_l2') | float(250) < !input voltage_limit or 
+                 states('!input grid_voltage_l3') | float(250) < !input voltage_limit }}
         sequence:
           - if:
               - condition: template
                 value_template: >
                   {% set e = t_2.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'eq', 'on') | list | length > 0 if e else true }}
+                  {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
             then:
               - action: persistent_notification.create
                 data:
@@ -271,23 +245,17 @@ action:
       - conditions:
           - condition: trigger
             id: soc_2
-          - condition: or
-            conditions:
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l1
-                below: !input voltage_limit
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l2
-                below: !input voltage_limit
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l3
-                below: !input voltage_limit
+          - condition: template
+            value_template: >-
+              {{ states('!input grid_voltage_l1') | float(250) < !input voltage_limit or 
+                 states('!input grid_voltage_l2') | float(250) < !input voltage_limit or 
+                 states('!input grid_voltage_l3') | float(250) < !input voltage_limit }}
         sequence:
           - if:
               - condition: template
                 value_template: >
                   {% set e = t_3.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'eq', 'on') | list | length > 0 if e else true }}
+                  {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
             then:
               - action: persistent_notification.create
                 data:
@@ -301,7 +269,7 @@ action:
           - condition: trigger
             id: grid_ok
         sequence:
-          # Ochrona przed powiadomieniem-widmo: sprawdź, czy jakakolwiek encja z grup faktycznie jest wyłączona
+          # Ochrona przed powiadomieniem-widmo: sprawdź, czy jakakolwiek encja z grup faktycznie jest wyłączona lub niedostępna
           - condition: template
             value_template: >
               {% set ns = namespace(all_e=[]) %}
@@ -310,12 +278,12 @@ action:
                 {% if e is string %}{% set e = [e] %}{% endif %}
                 {% set ns.all_e = ns.all_e + e %}
               {% endfor %}
-              {{ expand(ns.all_e) | selectattr('state', 'eq', 'off') | list | length > 0 if ns.all_e else true }}
+              {{ expand(ns.all_e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if ns.all_e else false }}
           
           - action: persistent_notification.create
             data:
               title: "✅ POWRÓT ZASILANIA"
-              message: "Sieć stabilna >30s. Przywracam zasilanie kaskadowo."
+              message: "Wszystkie fazy stabilne >30s. Przywracam zasilanie kaskadowo."
           
           # 1. Najpierw najważniejsze (Grupa 3)
           - delay: "00:00:05"
@@ -323,7 +291,7 @@ action:
               - condition: template
                 value_template: >
                   {% set e = t_3.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'eq', 'off') | list | length > 0 if e else true }}
+                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
             then:
               - action: switch.turn_on
                 target: !input targets_group_3
@@ -334,7 +302,7 @@ action:
               - condition: template
                 value_template: >
                   {% set e = t_2.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'eq', 'off') | list | length > 0 if e else true }}
+                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
             then:
               - action: switch.turn_on
                 target: !input targets_group_2
@@ -345,7 +313,7 @@ action:
               - condition: template
                 value_template: >
                   {% set e = t_1.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'eq', 'off') | list | length > 0 if e else true }}
+                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
             then:
               - action: switch.turn_on
                 target: !input targets_group_1
@@ -356,7 +324,7 @@ action:
               - condition: template
                 value_template: >
                   {% set e = t_0.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'eq', 'off') | list | length > 0 if e else true }}
+                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
             then:
               - action: switch.turn_on
                 target: !input targets_immediate
