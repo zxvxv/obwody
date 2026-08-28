@@ -1,9 +1,11 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery) v1.06"
+  name: "Obwody Krytyczne (Smart Recovery) v1.07"
   description: >
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     HISTORIA WERSJI:
+    v1.07 - ZIMNY START / RESTART: Dodano odporność na restart HA w trakcie trwającej awarii oraz obsługę ręcznego wyzwolenia. 
+            Skrypt natychmiast diagnozuje stan sieci oraz baterii przy starcie i w razie awarii bezwarunkowo odcina zasilanie grup, nie czekając na "przecięcie" progu.
     v1.06 - NAPRAWA IMPORTU HA: Usunięto błąd walidacji YAML. Zastąpiono szablony z '!input' natywnymi warunkami 'numeric_state'.
             Dodano 'mode: queued', aby wyeliminować wyścigi (Race Condition) bez blokowania importu z GitHuba.
             Przywrócono pełną logikę AND dla powrotu zasilania przy użyciu bezpiecznych bloków warunkowych.
@@ -133,6 +135,14 @@ blueprint:
           mode: box
 
 trigger:
+  # Zimny Start i Ręczne uruchomienie
+  - platform: homeassistant
+    event: start
+    id: cold_start
+  - platform: event
+    event_type: automation_reloaded
+    id: cold_start
+
   # Wyzwalacze GRUPY 0 (v1.06) - 1 sekunda (odsiewanie błędów Modbus)
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
@@ -203,6 +213,84 @@ action:
       t_3: !input targets_group_3
 
   - choose:
+      # Akcja dla ZIMNEGO STARTU (Restart HA lub ręczne wywołanie)
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger is not defined or trigger.id == 'cold_start' }}"
+        sequence:
+          # --- SPRAWDZENIE AWARII SIECI PRZY STARCIE ---
+          - if:
+              - condition: or
+                conditions:
+                  - condition: numeric_state
+                    entity_id: !input grid_voltage_l1
+                    below: !input voltage_limit
+                  - condition: numeric_state
+                    entity_id: !input grid_voltage_l2
+                    below: !input voltage_limit
+                  - condition: numeric_state
+                    entity_id: !input grid_voltage_l3
+                    below: !input voltage_limit
+            then:
+              - action: persistent_notification.create
+                data:
+                  title: "⚡ AWARIA (Zimny Start)"
+                  message: "Uruchomiono system w trakcie awarii zasilania! Odcinam Grupy 0 i 1."
+              - if:
+                  - condition: template
+                    value_template: >
+                      {% set e = t_0.entity_id | default([]) %}
+                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
+                then:
+                  - action: switch.turn_off
+                    target: !input targets_immediate
+              - if:
+                  - condition: template
+                    value_template: >
+                      {% set e = t_1.entity_id | default([]) %}
+                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
+                then:
+                  - action: switch.turn_off
+                    target: !input targets_group_1
+
+          # --- SPRAWDZENIE BATERII (OSTRZEGAWCZY) PRZY STARCIE ---
+          - if:
+              - condition: numeric_state
+                entity_id: !input battery_soc
+                below: !input soc_limit_1
+            then:
+              - if:
+                  - condition: template
+                    value_template: >
+                      {% set e = t_2.entity_id | default([]) %}
+                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      title: "🔋 BATERIA SŁABA (Zimny Start)"
+                      message: "Niski poziom baterii przy starcie! Odcinam Grupę 2."
+                  - action: switch.turn_off
+                    target: !input targets_group_2
+
+          # --- SPRAWDZENIE BATERII (KRYTYCZNY) PRZY STARCIE ---
+          - if:
+              - condition: numeric_state
+                entity_id: !input battery_soc
+                below: !input soc_limit_2
+            then:
+              - if:
+                  - condition: template
+                    value_template: >
+                      {% set e = t_3.entity_id | default([]) %}
+                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      title: "🪫 BATERIA KRYTYCZNA (Zimny Start)"
+                      message: "Krytyczny poziom baterii przy starcie! Odcinam Grupę 3."
+                  - action: switch.turn_off
+                    target: !input targets_group_3
+
       # Akcja dla GRUPY 0 (Po 1s)
       - conditions:
           - condition: trigger
