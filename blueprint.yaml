@@ -1,21 +1,18 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery) v1.05"
+  name: "Obwody Krytyczne (Smart Recovery) v1.06"
   description: >
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     HISTORIA WERSJI:
-    v1.05 - ZBIORCZY WYZWALACZ & EEPROM FIX: Usunięto wyścigi akcji (Race Condition) łącząc wyzwalacze w pakiety zbiorcze.
-            Logika EEPROM uwzględnia teraz stany "unavailable" i "unknown", zapobiegając blokadzie ratunkowej.
-            KRYTYCZNA POPRAWKA: Powrót zasilania wymaga teraz stabilizacji WSZYSTKICH 3 faz (wcześniej wystarczyła jedna).
+    v1.06 - NAPRAWA IMPORTU HA: Usunięto błąd walidacji YAML. Zastąpiono szablony z '!input' natywnymi warunkami 'numeric_state'.
+            Dodano 'mode: queued', aby wyeliminować wyścigi (Race Condition) bez blokowania importu z GitHuba.
+            Przywrócono pełną logikę AND dla powrotu zasilania przy użyciu bezpiecznych bloków warunkowych.
+    v1.05 - KRYTYCZNA POPRAWKA: Logika EEPROM uwzględnia teraz stany "unavailable" i "unknown", zapobiegając blokadzie ratunkowej.
             KRYTYCZNA POPRAWKA: Puste grupy (brak urządzeń) zwracają FALSE, co eliminuje błędy wywołania pustych usług w HA.
     v1.04 - OCHRONA EEPROM: Dodano warunki weryfikujące stan przed wysłaniem komendy zapisu. 
-            Modbus/przekaźnik otrzyma komendę tylko, gdy jego stan faktycznie wymaga zmiany.
-            Dodano 1-sekundową zwłokę dla GRUPY 0 w celu odsiania fałszywych alarmów odczytu.
-    v1.03 - Poprawka błędu 'Missing input': dodano parametr 'default: {}' dla GRUPY 0, czyniąc ją opcjonalną i zabezpieczając stare automatyzacje przed błędami walidacji.
-    v1.02 - Dodano GRUPĘ 0 (Natychmiastową) - wyłącza się bezwarunkowo przy zaniku napięcia (0 sek opóźnienia).
+    v1.03 - Poprawka błędu 'Missing input': dodano parametr 'default: {}' dla GRUPY 0.
+    v1.02 - Dodano GRUPĘ 0 (Natychmiastową).
     v1.01 - Dodano 5-sekundową zwłokę przy wykrywaniu awarii (Anty-Flicker).
-            Zapobiega to wyłączaniu przy chwilowych spadkach napięcia.
-            Zaktualizowano składnię service -> action.
 
     0. ZANIK NAPIĘCIA (< Limit V przez 1s) -> Wyłącza GRUPĘ 0 (Natychmiastowa).
     1. AWARIA SIECI (< Limit V przez 5s) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
@@ -136,25 +133,41 @@ blueprint:
           mode: box
 
 trigger:
-  # Wyzwalacz GRUPY 0 (v1.05) - ZBIORCZY 1 sekunda (odsiewanie błędów Modbus, eliminacja wyścigów)
-  - platform: template
-    value_template: >-
-      {{ states('!input grid_voltage_l1') | float(250) < !input voltage_limit or 
-         states('!input grid_voltage_l2') | float(250) < !input voltage_limit or 
-         states('!input grid_voltage_l3') | float(250) < !input voltage_limit }}
+  # Wyzwalacze GRUPY 0 (v1.06) - 1 sekunda (odsiewanie błędów Modbus)
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l1
+    below: !input voltage_limit
+    for: "00:00:01"
+    id: grid_fail_fast
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l2
+    below: !input voltage_limit
+    for: "00:00:01"
+    id: grid_fail_fast
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l3
+    below: !input voltage_limit
     for: "00:00:01"
     id: grid_fail_fast
 
-  # Wyzwalacz GRUPY 1 (v1.05) - ZBIORCZY Awaria min. 5 sekund
-  - platform: template
-    value_template: >-
-      {{ states('!input grid_voltage_l1') | float(250) < !input voltage_limit or 
-         states('!input grid_voltage_l2') | float(250) < !input voltage_limit or 
-         states('!input grid_voltage_l3') | float(250) < !input voltage_limit }}
+  # Wyzwalacze GRUPY 1 - Awaria min. 5 sekund
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l1
+    below: !input voltage_limit
+    for: "00:00:05"
+    id: grid_fail
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l2
+    below: !input voltage_limit
+    for: "00:00:05"
+    id: grid_fail
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l3
+    below: !input voltage_limit
     for: "00:00:05"
     id: grid_fail
   
-  # Trigger SOC działa natychmiastowo - bez zmian (jeden sensor, brak wyścigów)
+  # Trigger SOC działa natychmiastowo
   - platform: numeric_state
     entity_id: !input battery_soc
     below: !input soc_limit_1
@@ -164,17 +177,25 @@ trigger:
     below: !input soc_limit_2
     id: soc_2
   
-  # Powrót - ZBIORCZY wymaga stabilizacji przez 30 sekund WSZYSTKICH 3 FAZ logicznym AND
-  - platform: template
-    value_template: >-
-      {{ states('!input grid_voltage_l1') | float(0) > !input voltage_recovery and 
-         states('!input grid_voltage_l2') | float(0) > !input voltage_recovery and 
-         states('!input grid_voltage_l3') | float(0) > !input voltage_recovery }}
+  # Powrót - Wymaga 30s stabilizacji (logika AND wszystkich faz sprawdzana w akcji)
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l1
+    above: !input voltage_recovery
+    for: "00:00:30"
+    id: grid_ok
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l2
+    above: !input voltage_recovery
+    for: "00:00:30"
+    id: grid_ok
+  - platform: numeric_state
+    entity_id: !input grid_voltage_l3
+    above: !input voltage_recovery
     for: "00:00:30"
     id: grid_ok
 
 action:
-  # Deklaracja zmiennych ułatwiających weryfikację stanu celów w szablonach
+  # Deklaracja zmiennych z !input (bezpieczna metoda dla HA)
   - variables:
       t_0: !input targets_immediate
       t_1: !input targets_group_1
@@ -222,11 +243,17 @@ action:
       - conditions:
           - condition: trigger
             id: soc_1
-          - condition: template
-            value_template: >-
-              {{ states('!input grid_voltage_l1') | float(250) < !input voltage_limit or 
-                 states('!input grid_voltage_l2') | float(250) < !input voltage_limit or 
-                 states('!input grid_voltage_l3') | float(250) < !input voltage_limit }}
+          - condition: or
+            conditions:
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l1
+                below: !input voltage_limit
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l2
+                below: !input voltage_limit
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l3
+                below: !input voltage_limit
         sequence:
           - if:
               - condition: template
@@ -245,11 +272,17 @@ action:
       - conditions:
           - condition: trigger
             id: soc_2
-          - condition: template
-            value_template: >-
-              {{ states('!input grid_voltage_l1') | float(250) < !input voltage_limit or 
-                 states('!input grid_voltage_l2') | float(250) < !input voltage_limit or 
-                 states('!input grid_voltage_l3') | float(250) < !input voltage_limit }}
+          - condition: or
+            conditions:
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l1
+                below: !input voltage_limit
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l2
+                below: !input voltage_limit
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l3
+                below: !input voltage_limit
         sequence:
           - if:
               - condition: template
@@ -268,6 +301,18 @@ action:
       - conditions:
           - condition: trigger
             id: grid_ok
+          # Twarda weryfikacja logiki AND - wszystkie 3 fazy muszą być powyżej progu powrotu
+          - condition: and
+            conditions:
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l1
+                above: !input voltage_recovery
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l2
+                above: !input voltage_recovery
+              - condition: numeric_state
+                entity_id: !input grid_voltage_l3
+                above: !input voltage_recovery
         sequence:
           # Ochrona przed powiadomieniem-widmo: sprawdź, czy jakakolwiek encja z grup faktycznie jest wyłączona lub niedostępna
           - condition: template
@@ -329,4 +374,5 @@ action:
               - action: switch.turn_on
                 target: !input targets_immediate
 
-mode: restart
+mode: queued
+max: 10
