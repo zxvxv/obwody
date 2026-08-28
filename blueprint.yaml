@@ -1,18 +1,17 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery) v1.07"
+  name: "Obwody Krytyczne (Smart Recovery) v1.08"
   description: >
     System ochrony zasilania z INTELIGENTNYM POWROTEM.
     
     HISTORIA WERSJI:
+    v1.08 - FIX IMPORTU (PARSER): Zastąpiono problematyczny szablon 'trigger.id' natywnym blokiem 'or' z bezpiecznym sprawdzeniem. 
+            Naprawia to twardy błąd walidacji i pozwala na poprawny import/przeładowanie kodu w HA.
     v1.07 - ZIMNY START / RESTART: Dodano odporność na restart HA w trakcie trwającej awarii oraz obsługę ręcznego wyzwolenia. 
-            Skrypt natychmiast diagnozuje stan sieci oraz baterii przy starcie i w razie awarii bezwarunkowo odcina zasilanie grup, nie czekając na "przecięcie" progu.
-    v1.06 - NAPRAWA IMPORTU HA: Usunięto błąd walidacji YAML. Zastąpiono szablony z '!input' natywnymi warunkami 'numeric_state'.
-            Dodano 'mode: queued', aby wyeliminować wyścigi (Race Condition) bez blokowania importu z GitHuba.
-            Przywrócono pełną logikę AND dla powrotu zasilania przy użyciu bezpiecznych bloków warunkowych.
-    v1.05 - KRYTYCZNA POPRAWKA: Logika EEPROM uwzględnia teraz stany "unavailable" i "unknown", zapobiegając blokadzie ratunkowej.
-            KRYTYCZNA POPRAWKA: Puste grupy (brak urządzeń) zwracają FALSE, co eliminuje błędy wywołania pustych usług w HA.
+            Skrypt natychmiast diagnozuje stan sieci oraz baterii przy starcie i w razie awarii bezwarunkowo odcina zasilanie.
+    v1.06 - NAPRAWA IMPORTU HA: Zastąpiono szablony z '!input' natywnymi warunkami 'numeric_state'. Dodano 'mode: queued'.
+    v1.05 - KRYTYCZNA POPRAWKA: Logika EEPROM uwzględnia teraz stany "unavailable" i "unknown". Puste grupy (brak urządzeń) zwracają FALSE.
     v1.04 - OCHRONA EEPROM: Dodano warunki weryfikujące stan przed wysłaniem komendy zapisu. 
-    v1.03 - Poprawka błędu 'Missing input': dodano parametr 'default: {}' dla GRUPY 0.
+    v1.03 - Poprawka błędu 'Missing input' (default: {}).
     v1.02 - Dodano GRUPĘ 0 (Natychmiastową).
     v1.01 - Dodano 5-sekundową zwłokę przy wykrywaniu awarii (Anty-Flicker).
 
@@ -143,7 +142,7 @@ trigger:
     event_type: automation_reloaded
     id: cold_start
 
-  # Wyzwalacze GRUPY 0 (v1.06) - 1 sekunda (odsiewanie błędów Modbus)
+  # Wyzwalacze GRUPY 0 - 1 sekunda (odsiewanie błędów Modbus)
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     below: !input voltage_limit
@@ -187,7 +186,7 @@ trigger:
     below: !input soc_limit_2
     id: soc_2
   
-  # Powrót - Wymaga 30s stabilizacji (logika AND wszystkich faz sprawdzana w akcji)
+  # Powrót - Wymaga 30s stabilizacji (logika AND sprawdzana w akcji)
   - platform: numeric_state
     entity_id: !input grid_voltage_l1
     above: !input voltage_recovery
@@ -213,10 +212,14 @@ action:
       t_3: !input targets_group_3
 
   - choose:
-      # Akcja dla ZIMNEGO STARTU (Restart HA lub ręczne wywołanie)
+      # Akcja dla ZIMNEGO STARTU (Restart HA lub ręczne wywołanie - BEZPIECZNY WARUNEK)
       - conditions:
-          - condition: template
-            value_template: "{{ trigger is not defined or trigger.id == 'cold_start' }}"
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: cold_start
+              - condition: template
+                value_template: "{{ trigger is not defined or trigger.id is not defined }}"
         sequence:
           # --- SPRAWDZENIE AWARII SIECI PRZY STARCIE ---
           - if:
