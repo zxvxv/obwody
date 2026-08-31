@@ -1,54 +1,23 @@
 blueprint:
-  name: "Obwody Krytyczne (Smart Recovery) v1.11"
+  name: "Obwody Krytyczne (Smart Recovery) v1.12"
   description: >
-    System ochrony zasilania z INTELIGENTNYM POWROTEM.
+    System ochrony zasilania z INTELIGENTNYM POWROTEM oparty na fizycznym przekaźniku inwertera.
     
     HISTORIA WERSJI:
-    v1.11 - DEBOUNCE & FIX ZIMNEGO STARTU: Wydłużono bufory czasowe awarii (Grupa 0 do 5s, Grupa 1 do 10s). Dodano twardą weryfikację napięcia sieci przed zrzutem obciążenia z powodu niskiego SOC przy starcie HA.
-    v1.10 - FIX OBIEKTU SOC & ZIMNY POWRÓT: Naprawiono szablon odczytu z obiektu 'state' na 'state.state' w wyzwalaczach histerezy.
-            Dodano logikę przywracania zasilania OFF-GRID do modułu Zimnego Startu (uruchomienie przy naładowanej baterii).
-    v1.09 - OFF-GRID RECOVERY (HISTEREZA): Dodano ścieżki powrotu dla zasilania z baterii (+3% histerezy).
-    v1.08 - FIX IMPORTU (PARSER): Zastąpiono szablon 'trigger.id' natywnym blokiem 'or'.
-    v1.07 - ZIMNY START / RESTART: Dodano natychmiastową diagnozę spadków po restarcie systemu.
-    v1.06 - NAPRAWA IMPORTU HA: Zastąpiono '!input' w szablonach natywnymi warunkami. Dodano 'mode: queued'.
-    v1.05 - KRYTYCZNA POPRAWKA: Logika EEPROM uwzględnia stany "unavailable"/"unknown".
-    v1.04 - OCHRONA EEPROM: Weryfikacja stanu przed wysłaniem komendy zapisu. 
-    v1.03 - Poprawka błędu 'Missing input' (default: {}).
-    v1.02 - Dodano GRUPĘ 0 (Natychmiastową).
-    v1.01 - Dodano 5-sekundową zwłokę przy wykrywaniu awarii.
+    v1.12 - REWOLUCJA LOGIKI: Usunięto warunki napięciowe. Przejście na twardy odczyt stanu przekaźnika AC inwertera (binary_sensor.deye_inverter_ac_grid_relay).
+            Wprowadzono tryb 'restart' (ochrona przed migotaniem sieci). Uproszczono wywołania celów (wsparcie dla Urządzeń i Obszarów).
 
-    0. ZANIK NAPIĘCIA (< Limit V przez 5s) -> Wyłącza GRUPĘ 0 (Natychmiastowa).
-    1. AWARIA SIECI (< Limit V przez 10s) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
+    0. ZANIK NAPIĘCIA (Przekaźnik OFF przez 5s) -> Wyłącza GRUPĘ 0 (Natychmiastowa).
+    1. AWARIA SIECI (Przekaźnik OFF przez 10s) -> Wyłącza GRUPĘ 1 (Największe odbiorniki).
     2. SŁABA BATERIA (< Limit 1) -> Wyłącza GRUPĘ 2 (Ostrzegawcze).
     3. PUSTA BATERIA (< Limit 2) -> Wyłącza GRUPĘ 3 (Reszta domu).
     
     POWRÓT ZASILANIA (Sekwencja Startu):
+    Wymaga przekaźnika ON przez 30s.
     Najpierw GRUPA 3 (Najważniejsze) -> potem GRUPA 2 -> potem GRUPA 1 -> na końcu GRUPA 0.
   domain: automation
-  source_url: https://github.com/zxvxv/obwody/blob/main/blueprint.yaml
   input:
     # --- CZUJNIKI ---
-    grid_voltage_l1:
-      name: "Sensor Napięcia L1"
-      default: sensor.deye_inverter_grid_l1_voltage
-      selector:
-        entity:
-          domain: sensor
-          device_class: voltage
-    grid_voltage_l2:
-      name: "Sensor Napięcia L2"
-      default: sensor.deye_inverter_grid_l2_voltage
-      selector:
-        entity:
-          domain: sensor
-          device_class: voltage
-    grid_voltage_l3:
-      name: "Sensor Napięcia L3"
-      default: sensor.deye_inverter_grid_l3_voltage
-      selector:
-        entity:
-          domain: sensor
-          device_class: voltage
     battery_soc:
       name: "Sensor Baterii (SOC)"
       default: sensor.deye_inverter_battery_bms_soc
@@ -57,16 +26,6 @@ blueprint:
           domain: sensor
 
     # --- PROGI ---
-    voltage_limit:
-      name: "Próg Napięcia - AWARIA (V)"
-      default: 190
-      selector:
-        number:
-          min: 150
-          max: 230
-          unit_of_measurement: V
-          mode: box
-    
     soc_limit_1:
       name: "Próg Baterii - OSTRZEGAWCZY (%)"
       default: 80
@@ -90,7 +49,7 @@ blueprint:
     # --- OBWODY ---
     targets_immediate:
       name: "GRUPA 0: Natychmiastowa / Hard Stop"
-      description: "Te urządzenia gasną po 5s gdy napięcie spadnie poniżej limitu."
+      description: "Te urządzenia gasną po 5s od rozłączenia sieci."
       default: {}
       selector:
         target:
@@ -99,7 +58,7 @@ blueprint:
 
     targets_group_1:
       name: "GRUPA 1: Awaria Sieci (po 10s)"
-      description: "Te urządzenia gasną PIERWSZE przy awarii (po 10s), a wstają jako jedne z ostatnich (Duże AGD)."
+      description: "Te urządzenia gasną po 10s od rozłączenia sieci."
       default: {}
       selector:
         target:
@@ -124,17 +83,6 @@ blueprint:
           entity:
             domain: switch
 
-    # --- POWRÓT ---
-    voltage_recovery:
-      name: "Próg Napięcia - POWRÓT (V)"
-      default: 215
-      selector:
-        number:
-          min: 190
-          max: 250
-          unit_of_measurement: V
-          mode: box
-
 trigger:
   # Zimny Start i Ręczne uruchomienie
   - platform: homeassistant
@@ -144,37 +92,16 @@ trigger:
     event_type: automation_reloaded
     id: cold_start
 
-  # Wyzwalacze GRUPY 0 - 5 sekund (zwiększony bufor)
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l1
-    below: !input voltage_limit
+  # Wyzwalacze GRUPY 0 i 1 - Sztywny czas 5s i 10s na fizycznym przekaźniku
+  - platform: state
+    entity_id: binary_sensor.deye_inverter_ac_grid_relay
+    to: "off"
     for: "00:00:05"
     id: grid_fail_fast
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l2
-    below: !input voltage_limit
-    for: "00:00:05"
-    id: grid_fail_fast
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l3
-    below: !input voltage_limit
-    for: "00:00:05"
-    id: grid_fail_fast
-
-  # Wyzwalacze GRUPY 1 - Awaria min. 10 sekund
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l1
-    below: !input voltage_limit
-    for: "00:00:10"
-    id: grid_fail
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l2
-    below: !input voltage_limit
-    for: "00:00:10"
-    id: grid_fail
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l3
-    below: !input voltage_limit
+    
+  - platform: state
+    entity_id: binary_sensor.deye_inverter_ac_grid_relay
+    to: "off"
     for: "00:00:10"
     id: grid_fail
   
@@ -189,7 +116,6 @@ trigger:
     id: soc_2
 
   # Triggery powrotu SOC (OFF-GRID) z twardą histerezą +3%
-  # Prawidłowy odczyt z obiektu stanu poprzez 'state.state' eliminuje błędy matematyczne.
   - platform: numeric_state
     entity_id: !input battery_soc
     above: !input soc_limit_1
@@ -201,33 +127,16 @@ trigger:
     value_template: "{{ float(state.state, 0) - 3 }}"
     id: soc_ok_2
   
-  # Powrót Sieci - Wymaga 30s stabilizacji (logika AND sprawdzana w akcji)
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l1
-    above: !input voltage_recovery
-    for: "00:00:30"
-    id: grid_ok
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l2
-    above: !input voltage_recovery
-    for: "00:00:30"
-    id: grid_ok
-  - platform: numeric_state
-    entity_id: !input grid_voltage_l3
-    above: !input voltage_recovery
+  # Powrót Sieci - Wymaga 30s stabilizacji przekaźnika
+  - platform: state
+    entity_id: binary_sensor.deye_inverter_ac_grid_relay
+    to: "on"
     for: "00:00:30"
     id: grid_ok
 
 action:
-  # Deklaracja zmiennych z !input (bezpieczna metoda dla HA)
-  - variables:
-      t_0: !input targets_immediate
-      t_1: !input targets_group_1
-      t_2: !input targets_group_2
-      t_3: !input targets_group_3
-
   - choose:
-      # Akcja dla ZIMNEGO STARTU (Restart HA lub ręczne wywołanie)
+      # Akcja dla ZIMNEGO STARTU
       - conditions:
           - condition: or
             conditions:
@@ -236,70 +145,36 @@ action:
               - condition: template
                 value_template: "{{ trigger is not defined or trigger.id is not defined }}"
         sequence:
-          # --- SPRAWDZENIE AWARII SIECI PRZY STARCIE (WYŁĄCZANIE) ---
+          # --- SPRAWDZENIE AWARII SIECI PRZY STARCIE ---
           - if:
-              - condition: or
-                conditions:
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l1
-                    below: !input voltage_limit
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l2
-                    below: !input voltage_limit
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l3
-                    below: !input voltage_limit
+              - condition: state
+                entity_id: binary_sensor.deye_inverter_ac_grid_relay
+                state: "off"
             then:
               - action: persistent_notification.create
                 data:
                   title: "⚡ AWARIA (Zimny Start)"
                   message: "Uruchomiono system w trakcie awarii zasilania! Odcinam Grupy 0 i 1."
-              - if:
-                  - condition: template
-                    value_template: >
-                      {% set e = t_0.entity_id | default([]) %}
-                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-                then:
-                  - action: switch.turn_off
-                    target: !input targets_immediate
-              - if:
-                  - condition: template
-                    value_template: >
-                      {% set e = t_1.entity_id | default([]) %}
-                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-                then:
-                  - action: switch.turn_off
-                    target: !input targets_group_1
+              - action: switch.turn_off
+                target: !input targets_immediate
+              - action: switch.turn_off
+                target: !input targets_group_1
 
-          # --- ZIMNY START: BATERIA KRYTYCZNA (WYŁĄCZANIE) ---
+          # --- ZIMNY START: BATERIA KRYTYCZNA ---
           - if:
               - condition: numeric_state
                 entity_id: !input battery_soc
                 below: !input soc_limit_2
-              - condition: or
-                conditions:
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l1
-                    below: !input voltage_limit
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l2
-                    below: !input voltage_limit
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l3
-                    below: !input voltage_limit
+              - condition: state
+                entity_id: binary_sensor.deye_inverter_ac_grid_relay
+                state: "off"
             then:
-              - if:
-                  - condition: template
-                    value_template: >
-                      {% set e = t_3.entity_id | default([]) %}
-                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-                then:
-                  - action: persistent_notification.create
-                    data:
-                      title: "🪫 BATERIA KRYTYCZNA (Zimny Start)"
-                      message: "Krytyczny poziom baterii i brak sieci przy starcie! Odcinam Grupę 3."
-                  - action: switch.turn_off
-                    target: !input targets_group_3
+              - action: persistent_notification.create
+                data:
+                  title: "🪫 BATERIA KRYTYCZNA (Zimny Start)"
+                  message: "Krytyczny poziom baterii i brak sieci przy starcie! Odcinam Grupę 3."
+              - action: switch.turn_off
+                target: !input targets_group_3
 
           # --- ZIMNY START: BATERIA RATUNKOWA (WŁĄCZANIE OFF-GRID) ---
           - if:
@@ -308,48 +183,28 @@ action:
                 above: !input soc_limit_2
                 value_template: "{{ float(state.state, 0) - 3 }}"
             then:
-              - if:
-                  - condition: template
-                    value_template: >
-                      {% set e = t_3.entity_id | default([]) %}
-                      {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-                then:
-                  - action: persistent_notification.create
-                    data:
-                      title: "☀️ OFF-GRID POWRÓT (Zimny Start)"
-                      message: "Magazyn naładowany po restarcie (+3% histerezy). Przywracam Grupę 3."
-                  - action: switch.turn_on
-                    target: !input targets_group_3
+              - action: persistent_notification.create
+                data:
+                  title: "☀️ OFF-GRID POWRÓT (Zimny Start)"
+                  message: "Magazyn naładowany po restarcie (+3% histerezy). Przywracam Grupę 3."
+              - action: switch.turn_on
+                target: !input targets_group_3
 
-          # --- ZIMNY START: BATERIA OSTRZEGAWCZA (WYŁĄCZANIE) ---
+          # --- ZIMNY START: BATERIA OSTRZEGAWCZA ---
           - if:
               - condition: numeric_state
                 entity_id: !input battery_soc
                 below: !input soc_limit_1
-              - condition: or
-                conditions:
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l1
-                    below: !input voltage_limit
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l2
-                    below: !input voltage_limit
-                  - condition: numeric_state
-                    entity_id: !input grid_voltage_l3
-                    below: !input voltage_limit
+              - condition: state
+                entity_id: binary_sensor.deye_inverter_ac_grid_relay
+                state: "off"
             then:
-              - if:
-                  - condition: template
-                    value_template: >
-                      {% set e = t_2.entity_id | default([]) %}
-                      {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-                then:
-                  - action: persistent_notification.create
-                    data:
-                      title: "🔋 BATERIA SŁABA (Zimny Start)"
-                      message: "Niski poziom baterii i brak sieci przy starcie! Odcinam Grupę 2."
-                  - action: switch.turn_off
-                    target: !input targets_group_2
+              - action: persistent_notification.create
+                data:
+                  title: "🔋 BATERIA SŁABA (Zimny Start)"
+                  message: "Niski poziom baterii i brak sieci przy starcie! Odcinam Grupę 2."
+              - action: switch.turn_off
+                target: !input targets_group_2
 
           # --- ZIMNY START: BATERIA ŚREDNIA (WŁĄCZANIE OFF-GRID) ---
           - if:
@@ -358,225 +213,119 @@ action:
                 above: !input soc_limit_1
                 value_template: "{{ float(state.state, 0) - 3 }}"
             then:
-              - if:
-                  - condition: template
-                    value_template: >
-                      {% set e = t_2.entity_id | default([]) %}
-                      {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-                then:
-                  - action: persistent_notification.create
-                    data:
-                      title: "☀️ OFF-GRID POWRÓT (Zimny Start)"
-                      message: "Magazyn naładowany po restarcie (+3% histerezy). Przywracam Grupę 2."
-                  - action: switch.turn_on
-                    target: !input targets_group_2
+              - action: persistent_notification.create
+                data:
+                  title: "☀️ OFF-GRID POWRÓT (Zimny Start)"
+                  message: "Magazyn naładowany po restarcie (+3% histerezy). Przywracam Grupę 2."
+              - action: switch.turn_on
+                target: !input targets_group_2
 
       # Akcja dla GRUPY 0 (Po 5s)
       - conditions:
           - condition: trigger
             id: grid_fail_fast
         sequence:
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_0.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: persistent_notification.create
-                data:
-                  title: "⚡ ZANIK NAPIĘCIA"
-                  message: "Napięcie spadło (poniżej limitu przez 5s)! Wyłączam Grupę 0."
-              - action: switch.turn_off
-                target: !input targets_immediate
+          - action: persistent_notification.create
+            data:
+              title: "⚡ ZANIK NAPIĘCIA"
+              message: "Rozłączenie przekaźnika sieci (>5s)! Wyłączam Grupę 0."
+          - action: switch.turn_off
+            target: !input targets_immediate
 
       # Akcja dla GRUPY 1 (Po 10s)
       - conditions:
           - condition: trigger
             id: grid_fail
         sequence:
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_1.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: persistent_notification.create
-                data:
-                  title: "⚡ AWARIA"
-                  message: "Napięcie poniżej limitu przez >10s! Wyłączam Grupę 1 (Duże AGD)."
-              - action: switch.turn_off
-                target: !input targets_group_1
+          - action: persistent_notification.create
+            data:
+              title: "⚡ AWARIA"
+              message: "Brak zasilania AC (>10s)! Wyłączam Grupę 1 (Duże AGD)."
+          - action: switch.turn_off
+            target: !input targets_group_1
             
       # Akcja dla GRUPY 2 (Słaba bateria)
       - conditions:
           - condition: trigger
             id: soc_1
-          - condition: or
-            conditions:
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l1
-                below: !input voltage_limit
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l2
-                below: !input voltage_limit
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l3
-                below: !input voltage_limit
+          - condition: state
+            entity_id: binary_sensor.deye_inverter_ac_grid_relay
+            state: "off"
         sequence:
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_2.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: persistent_notification.create
-                data:
-                  title: "🔋 BATERIA SŁABA"
-                  message: "Wyłączam Grupę 2."
-              - action: switch.turn_off
-                target: !input targets_group_2
+          - action: persistent_notification.create
+            data:
+              title: "🔋 BATERIA SŁABA"
+              message: "Wyłączam Grupę 2."
+          - action: switch.turn_off
+            target: !input targets_group_2
             
       # Akcja dla GRUPY 3 (Bateria krytyczna)
       - conditions:
           - condition: trigger
             id: soc_2
-          - condition: or
-            conditions:
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l1
-                below: !input voltage_limit
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l2
-                below: !input voltage_limit
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l3
-                below: !input voltage_limit
+          - condition: state
+            entity_id: binary_sensor.deye_inverter_ac_grid_relay
+            state: "off"
         sequence:
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_3.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['on', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: persistent_notification.create
-                data:
-                  title: "🪫 BATERIA KRYTYCZNA"
-                  message: "Wyłączam Grupę 3 (Total Shutdown)."
-              - action: switch.turn_off
-                target: !input targets_group_3
+          - action: persistent_notification.create
+            data:
+              title: "🪫 BATERIA KRYTYCZNA"
+              message: "Wyłączam Grupę 3 (Total Shutdown)."
+          - action: switch.turn_off
+            target: !input targets_group_3
 
       # OFF-GRID POWRÓT DLA GRUPY 3 (Krytyczna + 3%)
       - conditions:
           - condition: trigger
             id: soc_ok_2
         sequence:
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_3.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: persistent_notification.create
-                data:
-                  title: "☀️ OFF-GRID POWRÓT (Grupa 3)"
-                  message: "Magazyn naładowany (+3% histerezy). Przywracam zasilanie dla Grupy 3."
-              - action: switch.turn_on
-                target: !input targets_group_3
+          - action: persistent_notification.create
+            data:
+              title: "☀️ OFF-GRID POWRÓT (Grupa 3)"
+              message: "Magazyn naładowany (+3% histerezy). Przywracam zasilanie dla Grupy 3."
+          - action: switch.turn_on
+            target: !input targets_group_3
 
       # OFF-GRID POWRÓT DLA GRUPY 2 (Ostrzegawcza + 3%)
       - conditions:
           - condition: trigger
             id: soc_ok_1
         sequence:
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_2.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: persistent_notification.create
-                data:
-                  title: "☀️ OFF-GRID POWRÓT (Grupa 2)"
-                  message: "Magazyn naładowany (+3% histerezy). Przywracam zasilanie dla Grupy 2."
-              - action: switch.turn_on
-                target: !input targets_group_2
+          - action: persistent_notification.create
+            data:
+              title: "☀️ OFF-GRID POWRÓT (Grupa 2)"
+              message: "Magazyn naładowany (+3% histerezy). Przywracam zasilanie dla Grupy 2."
+          - action: switch.turn_on
+            target: !input targets_group_2
             
       # POWRÓT ZASILANIA Z SIECI (GRID OK)
       - conditions:
           - condition: trigger
             id: grid_ok
-          # Twarda weryfikacja logiki AND - wszystkie 3 fazy muszą być powyżej progu powrotu
-          - condition: and
-            conditions:
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l1
-                above: !input voltage_recovery
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l2
-                above: !input voltage_recovery
-              - condition: numeric_state
-                entity_id: !input grid_voltage_l3
-                above: !input voltage_recovery
         sequence:
-          # Ochrona przed powiadomieniem-widmo: sprawdź, czy jakakolwiek encja z grup faktycznie jest wyłączona lub niedostępna
-          - condition: template
-            value_template: >
-              {% set ns = namespace(all_e=[]) %}
-              {% for t in [t_0, t_1, t_2, t_3] %}
-                {% set e = t.entity_id | default([]) %}
-                {% if e is string %}{% set e = [e] %}{% endif %}
-                {% set ns.all_e = ns.all_e + e %}
-              {% endfor %}
-              {{ expand(ns.all_e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if ns.all_e else false }}
-          
           - action: persistent_notification.create
             data:
               title: "✅ POWRÓT ZASILANIA"
-              message: "Wszystkie fazy stabilne >30s. Przywracam zasilanie kaskadowo."
+              message: "Przekaźnik sieciowy ustabilizowany (>30s). Przywracam zasilanie kaskadowo."
           
           # 1. Najpierw najważniejsze (Grupa 3)
           - delay: "00:00:05"
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_3.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: switch.turn_on
-                target: !input targets_group_3
+          - action: switch.turn_on
+            target: !input targets_group_3
           
           # 2. Średnie (Grupa 2)
           - delay: "00:00:05"
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_2.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: switch.turn_on
-                target: !input targets_group_2
+          - action: switch.turn_on
+            target: !input targets_group_2
           
           # 3. Obciążenia (Grupa 1)
           - delay: "00:00:05"
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_1.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: switch.turn_on
-                target: !input targets_group_1
+          - action: switch.turn_on
+            target: !input targets_group_1
           
           # 4. Natychmiastowe na samym końcu (Grupa 0)
           - delay: "00:00:05"
-          - if:
-              - condition: template
-                value_template: >
-                  {% set e = t_0.entity_id | default([]) %}
-                  {{ expand(e) | selectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list | length > 0 if e else false }}
-            then:
-              - action: switch.turn_on
-                target: !input targets_immediate
+          - action: switch.turn_on
+            target: !input targets_immediate
 
-mode: queued
-max: 10
+mode: restart
